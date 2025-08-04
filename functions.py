@@ -183,7 +183,8 @@ def get_meta_data(dataset: str) -> tuple[dict]:
             "inocula": row.get("inocula", ""),
             "time_post_treatment": row.get("time_post_treatment", ""),
             "additional_info": row.get("additional_info", ""),
-            "reference": row.get("reference", "")
+            "reference": row.get("reference", ""),
+            "doi": row.get("doi", "")
         }
         result[column_id] = {"information": info}
 
