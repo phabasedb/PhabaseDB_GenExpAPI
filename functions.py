@@ -173,7 +173,7 @@ def get_meta_data(dataset: str) -> tuple[dict]:
     # Crear estructura deseada
     result = {}
     for _, row in df.iterrows():
-        column_id = row["column"]
+        column_id = row["library"]
         info = {
             "organism": row.get("organism", ""),
             "cultivar": row.get("cultivar", ""),
