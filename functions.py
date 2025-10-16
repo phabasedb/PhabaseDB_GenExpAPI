@@ -1,4 +1,5 @@
 import re
+import pandas as pd
 from utils import read_dataset
 from constants import REQ_GENE_COLS, REQ_META_COLS
 
@@ -14,7 +15,7 @@ def get_gene_data(dataset: str, gene_id: str) -> tuple[dict, int]:
     except IOError as e:
         return {'status': 'error', 'message': str(e)}, 500
 
-    if not REQ_GENE_COLS.issubset(df.columns):
+    if not set(REQ_GENE_COLS).issubset(df.columns):
         return {'status': 'error', 'message': "The file is missing required columns. Please try again later or contact an administrator."}, 500
 
     sub = df[df['id_gen'] == gene_id]
@@ -31,7 +32,7 @@ def get_gene_data(dataset: str, gene_id: str) -> tuple[dict, int]:
             try:
                 v = float(raw)
             except (ValueError, TypeError):
-                v = None
+                v = 0
             expr.append({'condition': col, 'value': v})
 
         transcripts.append( {
@@ -57,7 +58,8 @@ def get_gene_ids_columns_data(dataset: str, ids: list, columns: list) -> tuple[d
     if not isinstance(columns, list) or not columns or not all(isinstance(c, str) and c.strip() for c in columns):
         return {'status': 'error', 'message': 'You must provide a non-empty list of conditions to query.'}, 400
 
-   
+    ids = list(set(ids))
+
     try:
         df = read_dataset(dataset)
     except FileNotFoundError as e:
@@ -66,7 +68,7 @@ def get_gene_ids_columns_data(dataset: str, ids: list, columns: list) -> tuple[d
         return {'status': 'error', 'message': str(e)}, 500
 
     
-    if not REQ_GENE_COLS.issubset(df.columns):
+    if not set(REQ_GENE_COLS).issubset(df.columns):
         return {'status': 'error', 'message': 'The dataset is missing required gene columns. Please try again later or contact an administrator.'}, 500
 
     
@@ -78,77 +80,41 @@ def get_gene_ids_columns_data(dataset: str, ids: list, columns: list) -> tuple[d
         }, 400
 
     
-    cols_order = ['id_gen', 'id_transcript'] + columns
-    df_sub = df[cols_order].copy()
+    df_sub = df[REQ_GENE_COLS + columns].copy()
+    found_rows = df_sub[df_sub['id_gen'].isin(ids) | df_sub['id_transcript'].isin(ids)]
+    if found_rows.empty:
+        return {'status': 'error', 'message': 'No matching gene or transcript IDs were found in the dataset.'}, 404
 
-    
-    df_sub[columns] = df_sub[columns].astype(float)
+    found_ids = set(found_rows['id_gen'].unique()) | set(found_rows['id_transcript'].unique())
+    missing_ids = [i for i in ids if i not in found_ids]
 
-    
-    pattern_tn = re.compile(r".+\.t\d+$")
-    gene_ids_only = [i for i in ids if not pattern_tn.match(i)]
-    tx_ids_only   = [i for i in ids if pattern_tn.match(i)]
-
-    
-    existing_genes = set(df_sub['id_gen']) & set(gene_ids_only)
-    missing_genes  = [g for g in gene_ids_only if g not in existing_genes]
-
-    existing_txs   = set(df_sub['id_transcript']) & set(tx_ids_only)
-    missing_txs    = [t for t in tx_ids_only if t not in existing_txs]
-
-   
+    # Función segura para convertir a float
+    def safe_float(x):
+        try:
+            return float(x)
+        except (ValueError, TypeError):
+            return 0
+        
     results = []
-    seen_txs = set()
-    for gid in existing_genes:
-        sub_df = df_sub[df_sub['id_gen'] == gid]
-        transcripts = []
-        for _, row in sub_df.iterrows():
-            tx = row['id_transcript']
-            seen_txs.add(tx)
-            expr = [{'condition': c, 'value': row[c]} for c in columns]
-            transcripts.append({'transcript_id': tx, 'expression': expr})
+    grouped = found_rows.groupby('id_gen')
+    for gid, sub_df in grouped:
+        transcripts = [
+            {
+                'transcript_id': row['id_transcript'],
+                'expression': [{'condition': c, 'value': safe_float(row[c])} for c in columns]
+            }
+            for _, row in sub_df.iterrows()
+        ]
         results.append({'id': gid, 'transcripts': transcripts})
-
-    
-    for tx in existing_txs:
-        if tx in seen_txs:
-            continue
-        row = df_sub[df_sub['id_transcript'] == tx].iloc[0]
-        expr = [{'condition': c, 'value': row[c]} for c in columns]
-        results.append({
-            'id': row['id_gen'],
-            'transcripts': [{'transcript_id': tx, 'expression': expr}]
-        })
-
-    
-    not_found = {}
-    if missing_genes:
-        not_found['genes'] = missing_genes
-    if missing_txs:
-        not_found['transcripts'] = missing_txs
-
-    if not results:
-        # Result if no ID is found
-        payload = {
-            'status': 'error',
-            'message': 'No matching gene or transcript IDs were found in the dataset.',
-        }
-        return payload, 404
-
-    if not not_found:
-        payload = {
-            'status': 'success',
-            'message': f"Found {sum(len(r['transcripts']) for r in results)} transcript(s) across {len(results)} gene(s).",
-            'result': results
-        }
-        return payload, 200
 
     payload = {
         'status': 'success',
-        'message': f"Found {sum(len(r['transcripts']) for r in results)} transcript(s) across {len(results)} gene(s); some IDs were not found.",
-        'result': results,
-        'not_found': not_found
+        'message': f"Found {sum(len(r['transcripts']) for r in results)} transcript(s) across {len(results)} gene(s).",
+        'result': results
     }
+    if missing_ids:
+        payload['not_found'] = {'ids': missing_ids}
+
     return payload, 200
     
 # METADATA FOR PATH DATASET
@@ -164,7 +130,7 @@ def get_meta_data(dataset: str) -> tuple[dict]:
         return {'status': 'error', 'message': str(e)}, 500
 
     # Validar columnas requeridas
-    if not REQ_META_COLS.issubset(df.columns):
+    if not set(REQ_META_COLS).issubset(df.columns):
         return {'status': 'error', 'message': 'The file is missing required columns. Please try again later or contact an administrator.'}, 500
 
     # Convertimos todos los valores a str para asegurar consistencia
